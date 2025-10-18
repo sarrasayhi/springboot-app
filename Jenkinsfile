@@ -31,7 +31,7 @@ pipeline {
             steps {
                 echo 'Running the Docker container...'
                 sh 'docker stop springboot-container || true && docker rm springboot-container || true'
-                sh 'docker run -d --name springboot-container -p 8080:8080 $IMAGE_NAME:latest'
+                sh 'docker run -d --name springboot-container -p 9090:8080 $IMAGE_NAME:latest'
             }
         }
     }
