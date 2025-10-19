@@ -2,125 +2,139 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'spring-app'
-        DOCKER_NETWORK = 'spring-net'
-        MYSQL_CONTAINER = 'mysql-db'
-        MYSQL_ROOT_PASSWORD = 'root'
-        MYSQL_DATABASE = 'studentdb'
+        DOCKER_IMAGE   = "springboot-app:latest"
+        DOCKER_NETWORK = "spring-net"
     }
 
     stages {
         stage('Checkout from GitHub') {
             steps {
-                echo '📦 Cloning source code from GitHub...'
-                checkout scm
+                echo '📦 Cloning repository...'
+                git branch: 'main', url: 'https://github.com/sarrasayhi/springboot-app.git'
             }
         }
 
-        stage('Start MySQL Container') {
+        stage('Start MySQL for Tests') {
             steps {
-                script {
-                    echo '🛢 Starting local MySQL container...'
-
-                    // Ensure Docker network exists
-                    sh '''
+                echo '🧩 Starting MySQL for integration tests...'
+                sh '''
                     docker network create ${DOCKER_NETWORK} || true
-                    '''
+                    docker rm -f mysql-db || true
+                    docker run -d --name mysql-db \
+                      --network ${DOCKER_NETWORK} \
+                      -e MYSQL_ROOT_PASSWORD=root \
+                      -e MYSQL_DATABASE=studentdb \
+                      -p 3306:3306 \
+                      mysql:8.0
+                '''
 
-                    // Remove old MySQL container if exists
-                    sh '''
-                    docker rm -f ${MYSQL_CONTAINER} || true
-                    '''
-
-                    // Run MySQL container
-                    sh '''
-                    docker run -d --name ${MYSQL_CONTAINER} \
-                        --network ${DOCKER_NETWORK} \
-                        -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD} \
-                        -e MYSQL_DATABASE=${MYSQL_DATABASE} \
-                        -p 3306:3306 mysql:8.0
-                    '''
-
-                    // Wait for MySQL to become ready
-                    sh '''
-                    echo "⏳ Waiting for MySQL to start..."
-                    for i in {1..40}; do
-                        if docker exec ${MYSQL_CONTAINER} mysqladmin ping -uroot -p${MYSQL_ROOT_PASSWORD} --silent; then
-                            echo "✅ MySQL is ready!"
-                            exit 0
-                        fi
-                        echo "⌛ Waiting... ($i/40)"
-                        sleep 5
+                echo '⏳ Waiting for MySQL readiness...'
+                sh '''
+                    for i in {1..60}; do
+                      if docker exec mysql-db mysqladmin ping -uroot -proot --silent; then
+                        echo "✅ MySQL is ready!"
+                        exit 0
+                      fi
+                      echo "⌛ Waiting for MySQL... ($i/60)"
+                      sleep 3
                     done
-                    echo "❌ MySQL failed to start"
-                    docker logs ${MYSQL_CONTAINER}
+
+                    echo "❌ MySQL failed to start in time"
+                    docker logs mysql-db
                     exit 1
-                    '''
-                }
+                '''
             }
         }
 
         stage('Build & Test with Maven') {
             steps {
-                echo '⚙️ Building project and running tests...'
-                sh 'mvn clean package -DskipTests=false'
+                echo '⚙️ Building and testing with Maven...'
+                sh 'mvn clean verify -DskipTests=false'
             }
         }
 
         stage('SonarQube Analysis') {
             environment {
-                SONARQUBE = credentials('sonar-token') // Jenkins Sonar token credential
+                scannerHome = tool 'sonar-scanner'
             }
             steps {
-                withSonarQubeEnv('sonar-server') { // replace 'sonar-server' with your configured server name
-                    sh '''
-                    echo "🔍 Running SonarQube analysis..."
-                    mvn sonar:sonar \
-                        -Dsonar.projectKey=spring-app \
-                        -Dsonar.host.url=$SONAR_HOST_URL \
-                        -Dsonar.login=$SONARQUBE
-                    '''
+                withSonarQubeEnv('SonarQube') {
+                    echo '🔍 Running SonarQube analysis...'
+                    sh '${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=springboot-app \
+                        -Dsonar.sources=src/main/java \
+                        -Dsonar.java.binaries=target/classes'
                 }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                echo '🐳 Building local Docker image for Spring Boot app...'
-                sh '''
-                docker build -t ${IMAGE_NAME}:latest .
-                '''
+                echo '🐳 Building Docker image...'
+                sh 'docker build -t ${DOCKER_IMAGE} .'
             }
         }
 
-        stage('Deploy Locally') {
+        stage('Deploy Containers') {
             steps {
-                echo '🚀 Deploying Spring Boot container connected to MySQL...'
-                sh '''
-                docker rm -f spring-app || true
-                docker run -d --name spring-app \
-                    --network ${DOCKER_NETWORK} \
-                    -e SPRING_DATASOURCE_URL=jdbc:mysql://${MYSQL_CONTAINER}:3306/${MYSQL_DATABASE} \
-                    -e SPRING_DATASOURCE_USERNAME=root \
-                    -e SPRING_DATASOURCE_PASSWORD=root \
-                    -p 8081:8081 ${IMAGE_NAME}:latest
-                '''
+                script {
+                    echo '🚀 Deploying Spring Boot and MySQL containers...'
+
+                    // Stop any running containers
+                    sh 'docker rm -f mysql-db springboot-container || true'
+
+                    // Ensure network exists
+                    sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
+
+                    // Start MySQL
+                    sh '''
+                        docker run -d --name mysql-db \
+                          --network ${DOCKER_NETWORK} \
+                          -e MYSQL_ROOT_PASSWORD=root \
+                          -e MYSQL_DATABASE=studentdb \
+                          -p 3306:3306 \
+                          mysql:8.0
+                    '''
+
+                    // Wait for readiness
+                    echo '⏳ Waiting for MySQL...'
+                    sh '''
+                    for i in {1..60}; do
+                      if docker exec mysql-db mysqladmin ping -uroot -proot --silent; then
+                        echo "✅ MySQL is ready!"
+                        exit 0
+                      fi
+                      echo "⌛ Waiting... ($i/60)"
+                      sleep 3
+                    done
+                    echo "❌ MySQL failed to start"
+                    docker logs mysql-db
+                    exit 1
+                    '''
+
+                    // Start Spring Boot app
+                    sh '''
+                        docker run -d --name springboot-container \
+                          --network ${DOCKER_NETWORK} \
+                          -p 9090:8081 \
+                          -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql-db:3306/studentdb \
+                          -e SPRING_DATASOURCE_USERNAME=root \
+                          -e SPRING_DATASOURCE_PASSWORD=root \
+                          ${DOCKER_IMAGE}
+                    '''
+                }
             }
         }
     }
 
     post {
-        always {
-            echo '🧹 Cleaning up after pipeline...'
-            sh '''
-            docker ps -a
-            '''
-        }
         success {
-            echo '✅ Pipeline finished successfully!'
+            echo '✅ Pipeline completed successfully!'
+            sh 'docker ps'
         }
         failure {
-            echo '❌ Pipeline failed. Check logs for details.'
+            echo '❌ Pipeline failed! Check logs for details.'
+            sh 'docker logs mysql-db || true'
         }
     }
 }
