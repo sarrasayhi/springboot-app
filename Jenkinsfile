@@ -2,8 +2,8 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = 'springboot-app'
-        SONARQUBE_ENV = 'SonarQube'  // Must match the name in Jenkins system config
+        DOCKER_IMAGE = "springboot-app:latest"
+        DOCKER_NETWORK = "spring-net"
     }
 
     stages {
@@ -14,44 +14,63 @@ pipeline {
             }
         }
 
-        stage('Build with Maven') {
+        stage('Build Maven Project') {
             steps {
                 echo 'Building Spring Boot app with Maven...'
                 sh 'mvn clean package -DskipTests'
             }
         }
 
-        stage('SonarQube Analysis') {
-            steps {
-                echo 'Running SonarQube analysis...'
-                withSonarQubeEnv('SonarQube') {
-                    sh 'mvn sonar:sonar -Dsonar.projectKey=springboot-app -Dsonar.host.url=http://localhost:9000'
-                }
-            }
-        }
-
         stage('Build Docker Image') {
             steps {
                 echo 'Building Docker image...'
-                sh 'docker build -t $IMAGE_NAME:latest .'
+                sh 'docker build -t ${DOCKER_IMAGE} .'
             }
         }
 
-        stage('Run Docker Container') {
+        stage('Run Containers') {
             steps {
-                echo 'Running the Docker container...'
-                sh 'docker stop springboot-container || true && docker rm springboot-container || true'
-                sh 'docker run -d --name springboot-container -p 9090:8080 $IMAGE_NAME:latest'
+                script {
+                    echo 'Setting up Docker network and containers...'
+
+                    // Create the Docker network if it doesn’t exist
+                    sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
+
+                    // Remove old containers if they exist
+                    sh 'docker rm -f mysql-db springboot-container || true'
+
+                    // Start MySQL container
+                    sh '''
+                        docker run -d --name mysql-db \
+                        --network ${DOCKER_NETWORK} \
+                        -e MYSQL_ROOT_PASSWORD=root \
+                        -e MYSQL_DATABASE=studentdb \
+                        -p 3306:3306 \
+                        mysql:8
+                    '''
+
+                    // Wait for MySQL to start up
+                    sh 'sleep 25'
+
+                    // Start Spring Boot container
+                    sh '''
+                        docker run -d --name springboot-container \
+                        --network ${DOCKER_NETWORK} \
+                        -p 9090:8081 \
+                        ${DOCKER_IMAGE}
+                    '''
+                }
             }
         }
     }
 
     post {
         success {
-            echo '✅ Spring Boot app built, analyzed, and running in Docker!'
+            echo '✅ Spring Boot app built and running on Docker network spring-net!'
+            sh 'docker ps'
         }
         failure {
-            echo '❌ Something went wrong during the pipeline.'
+            echo '❌ Pipeline failed! Check logs for errors.'
         }
     }
 }
