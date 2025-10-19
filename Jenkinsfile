@@ -83,10 +83,10 @@ pipeline {
                 sh '''
                     echo "⏳ Waiting 10s before checking endpoint..."
                     sleep 10
-                    if curl -s http://localhost:9090/actuator/health | grep -q "UP"; then
+                    if curl -s http://localhost:8081/actuator/health | grep -q "UP"; then
                         echo "✅ Application is UP and responding!"
                     else
-                        echo "❌ Application is not responding on port 9090!"
+                        echo "❌ Application is not responding on port 8081!"
                         exit 1
                     fi
                 '''
