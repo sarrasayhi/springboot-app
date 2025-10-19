@@ -2,121 +2,115 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE   = "springboot-app:latest"
-        DOCKER_NETWORK = "spring-net"
+        APP_NAME = "springboot-app"
+        APP_PORT = "8081"
+        MYSQL_ROOT_PASSWORD = "root"
+        MYSQL_DB = "studentdb"
+        MYSQL_USER = "root"
+        MYSQL_PASSWORD = "root"
     }
 
     stages {
 
-        stage('Checkout') {
+        stage('Checkout Code') {
             steps {
-                echo '📦 Checking out source code...'
+                echo "📦 Checking out code from GitHub..."
                 git branch: 'main', url: 'https://github.com/sarrasayhi/springboot-app.git'
             }
         }
 
-        stage('Build JAR (skip tests)') {
+        stage('Build Maven Project') {
             steps {
-                echo '⚙️ Building Spring Boot JAR (tests skipped)'
-                sh 'mvn clean package -DskipTests=true'
+                echo "🧱 Building Spring Boot project with Maven..."
+                sh 'mvn clean package -DskipTests'
             }
         }
 
-        stage('Docker Compose Up') {
+        stage('Build Docker Image') {
             steps {
-                echo '🧱 Starting containers with Docker Compose v2'
+                echo "🐳 Building Docker image for Spring Boot..."
                 sh '''
-                    echo "🧹 Cleaning up any previous containers and networks..."
-                    docker compose down || true
-                    docker rm -f mysql-db springboot-container || true
-                    docker network rm ${DOCKER_NETWORK} || true
-                    docker network create ${DOCKER_NETWORK} || true
+                docker build -t ${APP_NAME}:latest .
+                '''
+            }
+        }
 
-                    echo "🚀 Bringing up new containers..."
-                    docker compose up -d --build
+        stage('Run MySQL Container') {
+            steps {
+                echo "🐬 Starting MySQL container..."
+                sh '''
+                docker rm -f mysql-db || true
+                docker run -d --name mysql-db \
+                    -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD} \
+                    -e MYSQL_DATABASE=${MYSQL_DB} \
+                    -p 3306:3306 \
+                    mysql:8
                 '''
             }
         }
 
         stage('Wait for MySQL Readiness') {
             steps {
-                echo '⏳ Waiting for MySQL to become ready (port check)...'
+                echo "⏳ Waiting for MySQL to become ready..."
                 sh '''
-                    MAX_RETRIES=40
-                    RETRY_DELAY=3
-                    echo "🔍 Checking MySQL readiness on port 3306..."
-                    for i in $(seq 1 $MAX_RETRIES); do
-                        if docker exec mysql-db bash -c "exec 3<>/dev/tcp/127.0.0.1/3306" >/dev/null 2>&1; then
-                            echo "✅ MySQL is ready!"
-                            exit 0
-                        fi
-                        echo "⏳ Waiting for MySQL... ($i/$MAX_RETRIES)"
-                        sleep $RETRY_DELAY
-                    done
-                    echo "❌ MySQL did not become ready in time"
-                    docker logs mysql-db || true
+                for i in {1..20}; do
+                    if docker exec mysql-db mysqladmin ping -h"127.0.0.1" --silent; then
+                        echo "✅ MySQL is ready!"
+                        exit 0
+                    fi
+                    echo "⏳ Waiting for MySQL... ($i/20)"
+                    sleep 5
+                done
+                echo "❌ MySQL did not start in time!"
+                docker logs mysql-db
+                exit 1
+                '''
+            }
+        }
+
+        stage('Run Spring Boot Container') {
+            steps {
+                echo "🚀 Starting Spring Boot container..."
+                sh '''
+                docker rm -f springboot-container || true
+                docker run -d --name springboot-container \
+                    --link mysql-db:mysql \
+                    -p ${APP_PORT}:${APP_PORT} \
+                    ${APP_NAME}:latest
+                '''
+            }
+        }
+
+        stage('Verify Spring Boot Health Endpoint') {
+            steps {
+                echo "🌐 Checking if the Spring Boot app is healthy..."
+                sh '''
+                sleep 20
+                if curl -s http://localhost:${APP_PORT}/actuator/health | grep -q "UP"; then
+                    echo "✅ Application is healthy!"
+                else
+                    echo "❌ Application health check failed!"
+                    docker logs springboot-container
                     exit 1
-                '''
-            }
-        }
-
-        stage('Verify Spring Boot Startup') {
-            steps {
-                echo '🔍 Checking if Spring Boot container is healthy...'
-                sh '''
-                    echo "⏳ Waiting for Spring Boot container startup..."
-                    sleep 15
-                    if docker logs springboot-container | grep -q "Started"; then
-                        echo "✅ Spring Boot started successfully!"
-                    else
-                        echo "❌ Spring Boot failed to start!"
-                        docker logs springboot-container || true
-                        exit 1
-                    fi
-                '''
-            }
-        }
-
-        stage('Verify Application Endpoint') {
-            steps {
-                echo '🌐 Verifying Spring Boot application endpoint...'
-                sh '''
-                    echo "⏳ Waiting 10s before checking endpoint..."
-                    sleep 10
-                    if curl -s http://localhost:8081/actuator/health | grep -q "UP"; then
-                        echo "✅ Application is UP and responding!"
-                    else
-                        echo "❌ Application is not responding on port 8081!"
-                        exit 1
-                    fi
+                fi
                 '''
             }
         }
     }
 
     post {
-        success {
-            echo '✅ Pipeline completed successfully!'
+        always {
+            echo "🧹 Cleaning up containers..."
             sh '''
-                docker ps
+            docker stop springboot-container mysql-db || true
+            docker rm springboot-container mysql-db || true
             '''
+        }
+        success {
+            echo "✅ Pipeline completed successfully!"
         }
         failure {
-            echo '❌ Pipeline failed! Check logs for details.'
-            sh '''
-                echo "📋 MySQL logs:"
-                docker logs mysql-db || true
-                echo "📋 Spring Boot logs:"
-                docker logs springboot-container || true
-            '''
-        }
-        always {
-            echo '🧹 Cleaning up containers and networks...'
-            sh '''
-                docker compose down || true
-                docker rm -f mysql-db springboot-container || true
-                docker network rm ${DOCKER_NETWORK} || true
-            '''
+            echo "❌ Pipeline failed! Check logs for details."
         }
     }
 }
