@@ -4,7 +4,6 @@ pipeline {
     environment {
         DOCKER_IMAGE = "springboot-app:latest"
         DOCKER_NETWORK = "spring-net"
-        SONARQUBE_ENV = "SonarQube"  // Must match the name in Jenkins SonarQube config
     }
 
     stages {
@@ -15,31 +14,45 @@ pipeline {
             }
         }
 
-        stage('Build & Test with Maven') {
+        stage('Start MySQL for Tests') {
             steps {
-                echo 'Building and testing Spring Boot app...'
-                sh 'mvn clean test'
-            }
-            post {
-                always {
-                    junit '**/target/surefire-reports/*.xml'
+                script {
+                    echo 'Starting MySQL container for integration tests...'
+
+                    // Create network if missing
+                    sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
+
+                    // Remove old MySQL container if exists
+                    sh 'docker rm -f mysql-db || true'
+
+                    // Start MySQL
+                    sh '''
+                        docker run -d --name mysql-db \
+                        --network ${DOCKER_NETWORK} \
+                        -e MYSQL_ROOT_PASSWORD=root \
+                        -e MYSQL_DATABASE=studentdb \
+                        -p 3306:3306 \
+                        mysql:8
+                    '''
+
+                    // Wait for MySQL to initialize
+                    sh 'echo "⏳ Waiting for MySQL to start..." && sleep 25'
                 }
             }
         }
 
-        stage('SonarQube Code Analysis') {
-            environment {
-                scannerHome = tool 'SonarQubeScanner' // Must match Jenkins tool name
-            }
+        stage('Build & Test with Maven') {
             steps {
-                withSonarQubeEnv("${SONARQUBE_ENV}") {
+                echo 'Running Maven tests with real MySQL...'
+                sh 'mvn clean verify'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQubeServer') {
                     echo 'Running SonarQube analysis...'
-                    sh '''
-                        ${scannerHome}/bin/sonar-scanner \
-                        -Dsonar.projectKey=springboot-app \
-                        -Dsonar.sources=src \
-                        -Dsonar.java.binaries=target
-                    '''
+                    sh 'mvn sonar:sonar'
                 }
             }
         }
@@ -51,21 +64,15 @@ pipeline {
             }
         }
 
-        stage('Run Containers') {
+        stage('Deploy Containers') {
             steps {
                 script {
-                    echo 'Setting up Docker network and containers...'
+                    echo 'Deploying Spring Boot app and MySQL on Docker network...'
 
-                    // Create Docker network if it doesn’t exist
-                    sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
+                    // Remove old containers
+                    sh 'docker rm -f mysql-db springboot-container || true'
 
-                    // Stop and remove existing containers
-                    sh '''
-                        docker ps -q --filter "name=springboot-container" | grep -q . && docker stop springboot-container && docker rm springboot-container || true
-                        docker ps -q --filter "name=mysql-db" | grep -q . && docker stop mysql-db && docker rm mysql-db || true
-                    '''
-
-                    // Run MySQL
+                    // Start MySQL again (fresh)
                     sh '''
                         docker run -d --name mysql-db \
                         --network ${DOCKER_NETWORK} \
@@ -75,10 +82,10 @@ pipeline {
                         mysql:8
                     '''
 
-                    // Wait for MySQL
+                    // Wait a bit before starting app
                     sh 'sleep 25'
 
-                    // Run Spring Boot container
+                    // Start the app container
                     sh '''
                         docker run -d --name springboot-container \
                         --network ${DOCKER_NETWORK} \
@@ -92,11 +99,11 @@ pipeline {
 
     post {
         success {
-            echo '✅ Build, Tests, SonarQube Analysis, and Deployment completed successfully!'
+            echo '✅ Build, Test, and Deploy succeeded!'
             sh 'docker ps'
         }
         failure {
-            echo '❌ Pipeline failed! Check logs for errors.'
+            echo '❌ Pipeline failed! Check Jenkins logs.'
         }
     }
 }
