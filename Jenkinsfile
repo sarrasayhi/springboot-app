@@ -1,8 +1,14 @@
 pipeline {
     agent any
 
+    tools {
+        maven 'Maven3'       // Jenkins Maven installation name
+        jdk 'jdk17'          // Jenkins JDK installation name
+    }
+
     environment {
         IMAGE_NAME = 'springboot-app'
+        SONARQUBE = 'SonarQube'   // Jenkins SonarQube server name
     }
 
     stages {
@@ -20,6 +26,20 @@ pipeline {
             }
         }
 
+        stage('SonarQube Analysis') {
+            steps {
+                echo 'Running SonarQube analysis...'
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                      mvn sonar:sonar \
+                        -Dsonar.projectKey=springboot-app \
+                        -Dsonar.host.url=${SONAR_HOST_URL} \
+                        -Dsonar.login=${SONAR_AUTH_TOKEN}
+                    """
+                }
+            }
+        }
+
         stage('Build Docker Image') {
             steps {
                 echo 'Building Docker image...'
@@ -31,17 +51,18 @@ pipeline {
             steps {
                 echo 'Running the Docker container...'
                 sh 'docker stop springboot-container || true && docker rm springboot-container || true'
-                sh 'docker run -d --name springboot-container -p 9090:8080 $IMAGE_NAME:latest'
+                sh 'docker run -d --name springboot-container -p 9090:8081 $IMAGE_NAME:latest'
             }
         }
     }
 
     post {
         success {
-            echo '✅ Spring Boot app built and running in Docker!'
+            echo '✅ Spring Boot app built, analyzed, and deployed in Docker successfully!'
         }
         failure {
-            echo '❌ Something went wrong during the build.'
+            echo '❌ Build failed! Check the logs for details.'
         }
     }
 }
+
