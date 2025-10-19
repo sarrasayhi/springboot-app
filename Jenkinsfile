@@ -29,17 +29,21 @@ pipeline {
                       mysql:8.0
                 '''
 
-                echo '🔍 Waiting for MySQL to be ready (port check)...'
+                echo '⏳ Waiting for MySQL initialization (up to 90s)...'
                 sh '''
+                    # Install netcat inside MySQL container (needed for port probing)
+                    docker exec mysql-db bash -c "apt-get update && apt-get install -y netcat" >/dev/null 2>&1 || true
+
                     for i in {1..60}; do
-                      if docker exec mysql-db sh -c "nc -z localhost 3306"; then
+                      if docker exec mysql-db bash -c "nc -z localhost 3306"; then
                         echo "✅ MySQL is ready on port 3306!"
                         exit 0
                       fi
-                      echo "⏳ Waiting for MySQL to open port 3306... ($i/60)"
+                      echo "⏳ Waiting for MySQL... ($i/60)"
                       sleep 3
                     done
-                    echo "❌ MySQL did not start in time."
+
+                    echo "❌ MySQL failed to start in time."
                     docker logs mysql-db
                     exit 1
                 '''
@@ -82,10 +86,10 @@ pipeline {
                 script {
                     echo '🚀 Deploying Spring Boot and MySQL containers...'
 
-                    // Stop any running containers
+                    // Stop existing containers
                     sh 'docker rm -f mysql-db springboot-container || true'
 
-                    // Recreate network if missing
+                    // Ensure network exists
                     sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
 
                     // Start MySQL
@@ -98,17 +102,19 @@ pipeline {
                           mysql:8.0
                     '''
 
-                    // Wait for MySQL readiness
-                    echo '🔍 Checking MySQL readiness for deployment...'
+                    echo '⏳ Waiting for MySQL readiness before app deployment...'
                     sh '''
+                        docker exec mysql-db bash -c "apt-get update && apt-get install -y netcat" >/dev/null 2>&1 || true
+
                         for i in {1..60}; do
-                          if docker exec mysql-db sh -c "nc -z localhost 3306"; then
-                            echo "✅ MySQL is ready for app connection!"
+                          if docker exec mysql-db bash -c "nc -z localhost 3306"; then
+                            echo "✅ MySQL is ready for application!"
                             exit 0
                           fi
                           echo "⏳ Waiting for MySQL... ($i/60)"
                           sleep 3
                         done
+
                         echo "❌ MySQL did not become ready in time."
                         docker logs mysql-db
                         exit 1
