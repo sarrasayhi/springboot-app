@@ -46,10 +46,19 @@ pipeline {
             }
         }
 
-        stage('Build & Test with Maven') {
+        stage('Build & Test with Maven (in Docker)') {
             steps {
-                echo '⚙️ Building and testing with Maven...'
-                sh 'mvn clean verify -DskipTests=false'
+                echo '⚙️ Running Maven build and tests inside Docker (same network)...'
+                sh '''
+                    docker run --rm \
+                      --network ${DOCKER_NETWORK} \
+                      -v $PWD:/app -w /app \
+                      maven:3.9.9-eclipse-temurin-17 \
+                      mvn clean verify \
+                        -Dspring.datasource.url=jdbc:mysql://mysql-db:3306/studentdb \
+                        -Dspring.datasource.username=root \
+                        -Dspring.datasource.password=root
+                '''
             }
         }
 
@@ -60,10 +69,12 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarQube') {
                     echo '🔍 Running SonarQube analysis...'
-                    sh '${scannerHome}/bin/sonar-scanner \
-                        -Dsonar.projectKey=springboot-app \
-                        -Dsonar.sources=src/main/java \
-                        -Dsonar.java.binaries=target/classes'
+                    sh '''
+                        ${scannerHome}/bin/sonar-scanner \
+                          -Dsonar.projectKey=springboot-app \
+                          -Dsonar.sources=src/main/java \
+                          -Dsonar.java.binaries=target/classes
+                    '''
                 }
             }
         }
@@ -80,13 +91,9 @@ pipeline {
                 script {
                     echo '🚀 Deploying Spring Boot and MySQL containers...'
 
-                    // Stop any running containers
                     sh 'docker rm -f mysql-db springboot-container || true'
-
-                    // Ensure network exists
                     sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
 
-                    // Start MySQL
                     sh '''
                         docker run -d --name mysql-db \
                           --network ${DOCKER_NETWORK} \
@@ -96,23 +103,21 @@ pipeline {
                           mysql:8.0
                     '''
 
-                    // Wait for readiness
                     echo '⏳ Waiting for MySQL...'
                     sh '''
-                    for i in {1..60}; do
-                      if docker exec mysql-db mysqladmin ping -uroot -proot --silent; then
-                        echo "✅ MySQL is ready!"
-                        exit 0
-                      fi
-                      echo "⌛ Waiting... ($i/60)"
-                      sleep 3
-                    done
-                    echo "❌ MySQL failed to start"
-                    docker logs mysql-db
-                    exit 1
+                        for i in {1..60}; do
+                          if docker exec mysql-db mysqladmin ping -uroot -proot --silent; then
+                            echo "✅ MySQL is ready!"
+                            exit 0
+                          fi
+                          echo "⌛ Waiting... ($i/60)"
+                          sleep 3
+                        done
+                        echo "❌ MySQL failed to start"
+                        docker logs mysql-db
+                        exit 1
                     '''
 
-                    // Start Spring Boot app
                     sh '''
                         docker run -d --name springboot-container \
                           --network ${DOCKER_NETWORK} \
