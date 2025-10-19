@@ -39,14 +39,21 @@ pipeline {
         stage('Run MySQL Container') {
             steps {
                 script {
-                    sh 'docker rm -f $MYSQL_CONTAINER || true'
                     sh '''
+                        if [ "$(docker ps -aq -f name=$MYSQL_CONTAINER)" ]; then
+                            echo "Stopping and removing existing $MYSQL_CONTAINER..."
+                            docker stop $MYSQL_CONTAINER || true
+                            docker rm -f $MYSQL_CONTAINER || true
+                        fi
+
                         docker run -d --name $MYSQL_CONTAINER \
-                        -e MYSQL_ROOT_PASSWORD=$DB_PASSWORD \
-                        -e MYSQL_DATABASE=$DB_NAME \
-                        -p 3306:3306 $MYSQL_IMAGE
+                            -e MYSQL_ROOT_PASSWORD=$DB_PASSWORD \
+                            -e MYSQL_DATABASE=$DB_NAME \
+                            -p 3306:3306 $MYSQL_IMAGE
+
+                        echo "Waiting for MySQL to start..."
+                        sleep 20
                     '''
-                    sh 'echo "Waiting for MySQL to start..."; sleep 20'
                 }
             }
         }
@@ -54,14 +61,19 @@ pipeline {
         stage('Run Spring Boot App') {
             steps {
                 script {
-                    sh 'docker rm -f $CONTAINER_NAME || true'
                     sh '''
+                        if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
+                            echo "Stopping and removing existing $CONTAINER_NAME..."
+                            docker stop $CONTAINER_NAME || true
+                            docker rm -f $CONTAINER_NAME || true
+                        fi
+
                         docker run -d --name $CONTAINER_NAME \
-                        -e SPRING_DATASOURCE_URL=jdbc:mysql://$MYSQL_CONTAINER:3306/$DB_NAME \
-                        -e SPRING_DATASOURCE_USERNAME=$DB_USER \
-                        -e SPRING_DATASOURCE_PASSWORD=$DB_PASSWORD \
-                        --link $MYSQL_CONTAINER:mysql \
-                        -p 8081:8081 $DOCKER_IMAGE
+                            -e SPRING_DATASOURCE_URL=jdbc:mysql://$MYSQL_CONTAINER:3306/$DB_NAME \
+                            -e SPRING_DATASOURCE_USERNAME=$DB_USER \
+                            -e SPRING_DATASOURCE_PASSWORD=$DB_PASSWORD \
+                            --link $MYSQL_CONTAINER:mysql \
+                            -p 8081:8081 $DOCKER_IMAGE
                     '''
                 }
             }
