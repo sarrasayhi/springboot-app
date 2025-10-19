@@ -32,23 +32,21 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh 'sudo docker build -t $DOCKER_IMAGE .'
+                sh 'docker build -t $DOCKER_IMAGE .'
             }
         }
 
         stage('Run MySQL Container') {
             steps {
                 script {
-                    // Stop and remove old container if exists
-                    sh 'sudo docker rm -f $MYSQL_CONTAINER || true'
+                    sh 'docker rm -f $MYSQL_CONTAINER || true'
                     sh '''
-                        sudo docker run -d --name $MYSQL_CONTAINER \
+                        docker run -d --name $MYSQL_CONTAINER \
                         -e MYSQL_ROOT_PASSWORD=$DB_PASSWORD \
                         -e MYSQL_DATABASE=$DB_NAME \
                         -p 3306:3306 $MYSQL_IMAGE
                     '''
-                    // Wait for MySQL to start
-                    sh 'sleep 20'
+                    sh 'echo "Waiting for MySQL to start..."; sleep 20'
                 }
             }
         }
@@ -56,16 +54,14 @@ pipeline {
         stage('Run Spring Boot App') {
             steps {
                 script {
-                    // Stop old app container if exists
-                    sh 'sudo docker rm -f $CONTAINER_NAME || true'
-                    // Run new container connected to MySQL
+                    sh 'docker rm -f $CONTAINER_NAME || true'
                     sh '''
-                        sudo docker run -d --name $CONTAINER_NAME \
+                        docker run -d --name $CONTAINER_NAME \
                         -e SPRING_DATASOURCE_URL=jdbc:mysql://$MYSQL_CONTAINER:3306/$DB_NAME \
                         -e SPRING_DATASOURCE_USERNAME=$DB_USER \
                         -e SPRING_DATASOURCE_PASSWORD=$DB_PASSWORD \
                         --link $MYSQL_CONTAINER:mysql \
-                        -p 8080:8080 $DOCKER_IMAGE
+                        -p 8081:8081 $DOCKER_IMAGE
                     '''
                 }
             }
@@ -75,7 +71,7 @@ pipeline {
     post {
         success {
             echo '✅ Build and Deployment successful!'
-            sh 'sudo docker ps'
+            sh 'docker ps'
         }
         failure {
             echo '❌ Build failed. Check logs.'
