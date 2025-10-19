@@ -29,20 +29,18 @@ pipeline {
                       mysql:8.0
                 '''
 
-                echo '⏳ Waiting 20s before checking MySQL readiness...'
-                sh 'sleep 20'
-
-                echo '🔍 Checking MySQL readiness...'
+                echo '🔍 Waiting for MySQL to be ready (port check)...'
                 sh '''
-                    for i in {1..40}; do
-                      if docker exec mysql-db mysql -uroot -proot -e "SELECT 1" >/dev/null 2>&1; then
-                        echo "✅ MySQL is ready!"
+                    for i in {1..60}; do
+                      if docker exec mysql-db sh -c "nc -z localhost 3306"; then
+                        echo "✅ MySQL is ready on port 3306!"
                         exit 0
                       fi
-                      echo "⏳ Waiting for MySQL... ($i/40)"
+                      echo "⏳ Waiting for MySQL to open port 3306... ($i/60)"
                       sleep 3
                     done
-                    echo "❌ MySQL failed to start in time"
+                    echo "❌ MySQL did not start in time."
+                    docker logs mysql-db
                     exit 1
                 '''
             }
@@ -62,10 +60,12 @@ pipeline {
             steps {
                 withSonarQubeEnv('SonarQube') {
                     echo '🔍 Running SonarQube analysis...'
-                    sh '${scannerHome}/bin/sonar-scanner \
+                    sh '''
+                        ${scannerHome}/bin/sonar-scanner \
                         -Dsonar.projectKey=springboot-app \
                         -Dsonar.sources=src/main/java \
-                        -Dsonar.java.binaries=target/classes'
+                        -Dsonar.java.binaries=target/classes
+                    '''
                 }
             }
         }
@@ -98,9 +98,21 @@ pipeline {
                           mysql:8.0
                     '''
 
-                    // Wait for DB
-                    echo '⏳ Waiting for MySQL to become ready...'
-                    sh 'sleep 25'
+                    // Wait for MySQL readiness
+                    echo '🔍 Checking MySQL readiness for deployment...'
+                    sh '''
+                        for i in {1..60}; do
+                          if docker exec mysql-db sh -c "nc -z localhost 3306"; then
+                            echo "✅ MySQL is ready for app connection!"
+                            exit 0
+                          fi
+                          echo "⏳ Waiting for MySQL... ($i/60)"
+                          sleep 3
+                        done
+                        echo "❌ MySQL did not become ready in time."
+                        docker logs mysql-db
+                        exit 1
+                    '''
 
                     // Start Spring Boot app
                     sh '''
