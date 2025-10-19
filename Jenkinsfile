@@ -2,15 +2,15 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = "springboot-app:latest"
+        DOCKER_IMAGE   = "springboot-app:latest"
         DOCKER_NETWORK = "spring-net"
-        SONARQUBE_ENV = "SonarQube" // The SonarQube server name configured in Jenkins
+        SONARQUBE_ENV  = "SonarQube"
     }
 
     stages {
         stage('Checkout from GitHub') {
             steps {
-                echo '📥 Cloning repository...'
+                echo '📦 Cloning repository...'
                 git branch: 'main', url: 'https://github.com/sarrasayhi/springboot-app.git'
             }
         }
@@ -29,14 +29,17 @@ pipeline {
                       mysql:8.0
                 '''
 
-                echo '⏳ Waiting for MySQL to be ready...'
+                echo '⏳ Waiting 20s before checking MySQL readiness...'
+                sh 'sleep 20'
+
+                echo '🔍 Checking MySQL readiness...'
                 sh '''
-                    for i in {1..25}; do
-                      if docker exec mysql-db mysqladmin ping -h"localhost" -uroot -proot --silent; then
+                    for i in {1..40}; do
+                      if docker exec mysql-db mysql -uroot -proot -e "SELECT 1" >/dev/null 2>&1; then
                         echo "✅ MySQL is ready!"
                         exit 0
                       fi
-                      echo "⏳ Waiting ($i/25)..."
+                      echo "⏳ Waiting for MySQL... ($i/40)"
                       sleep 3
                     done
                     echo "❌ MySQL failed to start in time"
@@ -45,18 +48,24 @@ pipeline {
             }
         }
 
-        stage('Build and Test with Maven') {
+        stage('Build & Test with Maven') {
             steps {
-                echo '⚙️ Building and testing the Spring Boot app...'
-                sh 'mvn clean verify -DskipITs=false'
+                echo '⚙️ Building and testing with Maven...'
+                sh 'mvn clean verify -DskipTests=false'
             }
         }
 
         stage('SonarQube Analysis') {
+            environment {
+                scannerHome = tool 'sonar-scanner'
+            }
             steps {
-                echo '🔍 Running SonarQube analysis...'
-                withSonarQubeEnv("${SONARQUBE_ENV}") {
-                    sh 'mvn sonar:sonar'
+                withSonarQubeEnv('SonarQube') {
+                    echo '🔍 Running SonarQube analysis...'
+                    sh '${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=springboot-app \
+                        -Dsonar.sources=src/main/java \
+                        -Dsonar.java.binaries=target/classes'
                 }
             }
         }
@@ -71,45 +80,34 @@ pipeline {
         stage('Deploy Containers') {
             steps {
                 script {
-                    echo '🚀 Deploying containers on Docker network...'
+                    echo '🚀 Deploying Spring Boot and MySQL containers...'
 
-                    // Ensure network exists
-                    sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
-
-                    // Remove old containers
+                    // Stop any running containers
                     sh 'docker rm -f mysql-db springboot-container || true'
 
-                    // Start MySQL again for production (reuse network)
+                    // Recreate network if missing
+                    sh 'docker network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || docker network create ${DOCKER_NETWORK}'
+
+                    // Start MySQL
                     sh '''
                         docker run -d --name mysql-db \
-                        --network ${DOCKER_NETWORK} \
-                        -e MYSQL_ROOT_PASSWORD=root \
-                        -e MYSQL_DATABASE=studentdb \
-                        -p 3306:3306 \
-                        mysql:8.0
+                          --network ${DOCKER_NETWORK} \
+                          -e MYSQL_ROOT_PASSWORD=root \
+                          -e MYSQL_DATABASE=studentdb \
+                          -p 3306:3306 \
+                          mysql:8.0
                     '''
 
-                    // Wait for MySQL readiness (again)
-                    sh '''
-                        echo "⏳ Waiting for MySQL to be production-ready..."
-                        for i in {1..25}; do
-                          if docker exec mysql-db mysqladmin ping -h"localhost" -uroot -proot --silent; then
-                            echo "✅ MySQL is ready for production!"
-                            exit 0
-                          fi
-                          echo "⏳ Waiting ($i/25)..."
-                          sleep 3
-                        done
-                        echo "❌ MySQL failed to start in time"
-                        exit 1
-                    '''
+                    // Wait for DB
+                    echo '⏳ Waiting for MySQL to become ready...'
+                    sh 'sleep 25'
 
-                    // Start Spring Boot container
+                    // Start Spring Boot app
                     sh '''
                         docker run -d --name springboot-container \
-                        --network ${DOCKER_NETWORK} \
-                        -p 9090:8081 \
-                        ${DOCKER_IMAGE}
+                          --network ${DOCKER_NETWORK} \
+                          -p 9090:8081 \
+                          ${DOCKER_IMAGE}
                     '''
                 }
             }
@@ -118,7 +116,7 @@ pipeline {
 
     post {
         success {
-            echo '✅ Pipeline completed successfully! App is running on http://localhost:9090/student'
+            echo '✅ Pipeline completed successfully!'
             sh 'docker ps'
         }
         failure {
