@@ -3,6 +3,7 @@ pipeline {
 
     environment {
         DOCKER_IMAGE = "springboot-app"
+        DOCKERHUB_USER = "sarra784"
         CONTAINER_NAME = "springboot-app"
         MYSQL_CONTAINER = "mysql-db"
         MYSQL_IMAGE = "mysql:8.0"
@@ -36,58 +37,31 @@ pipeline {
             }
         }
 
-        stage('Run MySQL Container') {
+        stage('Push to DockerHub') {
             steps {
                 script {
-                    sh '''
-                        if [ "$(docker ps -aq -f name=$MYSQL_CONTAINER)" ]; then
-                            echo "Stopping and removing existing $MYSQL_CONTAINER..."
-                            docker stop $MYSQL_CONTAINER || true
-                            docker rm -f $MYSQL_CONTAINER || true
-                        fi
-
-                        docker run -d --name $MYSQL_CONTAINER \
-                            -e MYSQL_ROOT_PASSWORD=$DB_PASSWORD \
-                            -e MYSQL_DATABASE=$DB_NAME \
-                            -p 3306:3306 $MYSQL_IMAGE
-
-                        echo "Waiting for MySQL to start..."
-                        sleep 20
-                    '''
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', passwordVariable: 'DOCKERHUB_PASS', usernameVariable: 'DOCKERHUB_USER')]) {
+                        sh '''
+                            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USER" --password-stdin
+                            docker tag $DOCKER_IMAGE $DOCKERHUB_USER/$DOCKER_IMAGE:latest
+                            docker push $DOCKERHUB_USER/$DOCKER_IMAGE:latest
+                            docker logout
+                        '''
+                    }
                 }
             }
         }
 
-        stage('Run Spring Boot App') {
+        stage('Deploy to Kubernetes') {
             steps {
                 script {
                     sh '''
-                        if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
-                            echo "Stopping and removing existing $CONTAINER_NAME..."
-                            docker stop $CONTAINER_NAME || true
-                            docker rm -f $CONTAINER_NAME || true
-                        fi
-
-                        docker run -d --name $CONTAINER_NAME \
-                            -e SPRING_DATASOURCE_URL=jdbc:mysql://$MYSQL_CONTAINER:3306/$DB_NAME \
-                            -e SPRING_DATASOURCE_USERNAME=$DB_USER \
-                            -e SPRING_DATASOURCE_PASSWORD=$DB_PASSWORD \
-                            --link $MYSQL_CONTAINER:mysql \
-                            -p 8081:8081 $DOCKER_IMAGE
-                    '''
-                }
-            }
-        }
-
-        stage('Push Image to DockerHub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh '''
-                        echo "🔐 Logging in to DockerHub..."
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker tag $DOCKER_IMAGE $DOCKER_USER/$DOCKER_IMAGE:latest
-                        docker push $DOCKER_USER/$DOCKER_IMAGE:latest
-                        echo "✅ Image pushed successfully to DockerHub!"
+                        echo "🧩 Deploying application to Kubernetes..."
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
+                        echo "✅ Application deployed successfully!"
+                        kubectl get pods
+                        kubectl get svc
                     '''
                 }
             }
@@ -96,11 +70,10 @@ pipeline {
 
     post {
         success {
-            echo '✅ Build and Deployment successful!'
-            sh 'docker ps'
+            echo '✅ Build, Docker push, and Kubernetes deployment successful!'
         }
         failure {
-            echo '❌ Build failed. Check logs.'
+            echo '❌ Pipeline failed. Check logs.'
         }
     }
 }
